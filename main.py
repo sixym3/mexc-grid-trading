@@ -2,86 +2,104 @@ from mexc_sdk import Spot
 import config
 import asyncio
 import time
-
-RATE_LIMIT = 3 # Wait at least 3 seconds before sending transaction
+from queue import Queue
 
 async def main():
-    spot = Spot(api_key=config.MEXC['API_KEY'], api_secret=config.MEXC['API_KEY_SECRET'])
-    test = Grid("MX_USDT", 11, 2, 10, spot)
-    test.generate_order()
-    await test.place_all_order()
-    while True:
-        test.update()
+    spot = queue_spot(api_key=config.MEXC['API_KEY'], api_secret=config.MEXC['API_KEY_SECRET'])
 
-class Order():
+    """
+    mx = stock(spot, "MXUSDT")
+    mx_grid = grid(mx, 10, 6, 2)
+    print(mx_grid.delta)
+    print(mx.price)
+    print(mx_grid.get_order_detail())
+    """
 
-    placed = False
-    symbol = ""
+class async_function():
+    def __init__(self, function, args = [], kwargs = {}):
+        self.function = function
+        self.args = args
+        self.kwargs = kwargs
+        self.last_message = float(time.time())
 
-    def __init__(self, price, quantity, symbol, spot):
-        self.price = price
-        self.quantity = quantity
-        self.allocation = price * quantity
-        self.symbol = symbol
+    async def execute(self):
+        time_now = float(time.time())
+        if time_now < self.last_message + 3:
+            await asyncio.sleep(3)
+        self.last_message = time_now
+        return str(self.function(self.args)) + " " + str(time_now)
+
+class queue_spot(Spot):
+    def __init__(self, api_key, api_secret):
+        super().__init__(api_key, api_secret)
+        self.queue = Queue()
+
+    async def dequeue(self):
+        func = self.queue.get()
+        return await func.execute()
+
+    def ticker_price(self, ticker):
+        self.queue.put(async_function(super().ticker_price, ticker))
+
+class stock():
+    def __init__(self, spot, ticker):
         self.spot = spot
+        self.ticker = ticker
+        self.price = self.update_price()
 
-    def get_market_price(self):
-        return 2
+    def update_price(self):
+        return float(self.spot.ticker_price(self.ticker)["price"])
 
-    async def place_order(self):
-        await asyncio.sleep(3)
-        if (self.price < self.get_market_price()):
-            self.buy_order()
+class limit_order():
+    def __init__(self, stock, order_price, quantity):
+        self.stock = stock
+        self.order_price = order_price
+        self.quantity = quantity
+        self.type = self.get_order_type()
+
+    def place_order(self):
+        # Update order
+        response = self.stock.spot.new_order(self.ticker, self.type, "LIMIT", {"timeInForce": "GTC", "quantity": self.quantity, "price": self.order_price})
+        return response
+        # self.spot.new_order(self.ticker, "BUY", "MARKET", {"timeInForce": "GTC", "quantity": self.quantity, "quoteOrderQty": 6})
+
+    def get_order_type(self):
+        if self.order_price > self.stock.price:
+            return "SELL"
         else:
-            self.sell_order()
+            return "BUY"
 
-    def buy_order(self):
-        print("buy order at " + str(self.symbol) + ": " + str(self.quantity) + " @ " + str(self.price) + " $")
-        placed = True
+    def get_order_detail(self):
+        return self.type + " " + str(self.order_price) + "$ x " + str(self.quantity) + " units of " + str(self.stock.ticker)
 
-    def sell_order(self):
-        print("sell order at " + str(self.symbol) + ": " + str(self.quantity) + " @ " + str(self.price) + " $")
-        placed = True
-
-    def is_filled(self):
-        print("checked if filled")
-        if self.placed:
-             self.place_order(self)
-             self.placed = False
-
-
-class Grid():
-
-    def __init__(self, symbol, grid_count, percentage, quantity, spot):
-        self.symbol = symbol
-        self.open_orders = []
-        self.grid_count = grid_count
-        self.difference = self.get_market_price() * percentage / 100
-        self.quantity = quantity
-        self.spot = spot
+class grid():
+    def __init__(self, stock, amount, order_quantity, percentage, initial_price = None):
+        self.amount = amount
+        self.stock = stock
+        self.delta = self.get_delta(percentage)
+        self.order_quantity = order_quantity
+        self.initial_price = initial_price if initial_price != None else self.stock.price
+        self.orders = self.generate_order()
 
     def generate_order(self):
-        buy_order = int(self.grid_count / 2)
-        sell_order = int(self.grid_count / 2)
-        if self.grid_count % 2 == 1:
-            buy_order = buy_order + 1
+        orders = []
+        upper = int(self.amount / 2) + (1 if self.amount % 2 == 1 else 0)
+        lower = int(self.amount / 2)
+        # self.stock.update_price()
+        for i in range(upper):
+            orders.append(limit_order(self.stock, self.initial_price + (self.delta * i), self.order_quantity))
+        for i in range(1, lower + 1):
+            orders.append(limit_order(self.stock, self.initial_price - (self.delta * i), self.order_quantity))
+        return orders
 
-        for i in range(buy_order):
-            self.open_orders.append(Order(self.get_market_price()*(1+(i*self.difference)),
-                                                                        self.quantity,
-                                                                        self.symbol,
-                                                                        self.spot))
-        for i in range(1, sell_order + 1):
-            self.open_orders.append(Order(self.get_market_price()*(1-(i*self.difference)),
-                                                                        self.quantity,
-                                                                        self.symbol,
-                                                                        self.spot))
+    def get_order_detail(self):
+        results = ""
+        for order in self.orders:
+            results += order.get_order_detail() + "\n"
+        return results
 
-    async def place_all_order(self):
-        for order in self.open_orders:
-            await order.place_order()
+    def get_delta(self, percentage):
+        return self.stock.price * percentage / 100
 
-    def get_market_price(self):
-        return 2
 
 asyncio.run(main())
